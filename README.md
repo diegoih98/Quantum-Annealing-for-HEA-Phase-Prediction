@@ -15,6 +15,10 @@ Our work demonstrates a **quantum-enhanced machine learning (QML) framework** th
 
 The pipeline is fully reproducible, hardware-agnostic (classical/quantum backends), and designed to accelerate **High-Entropy Alloy (HEA)** discovery.
 
+> **Note:** Several scripts rely on execution on a **D-Wave quantum annealer** (Advantage or hybrid solvers).  
+> You must have a valid **D-Wave Leap account and purchased compute time** for these parts of the code to run.  
+> Classical fallback versions are included for reproducibility but will not reproduce the quantum-specific speedups.
+
 ---
 
 ## 📖 Overview
