@@ -1,0 +1,16 @@
+cff-version: 1.2.0
+message: "If you use this code, please cite the following paper:"
+authors:
+  - family-names: "Ibarra Hoyos"
+    given-names: "Diego"
+  - family-names: "Chern"
+    given-names: "Gia-Wei"
+  - family-names: "Klich"
+    given-names: "Israel"
+  - family-names: "Poon"
+    given-names: "Joseph"
+title: "Quantum-Annealing Enhanced Machine Learning for Interpretable Phase Classification of High-Entropy Alloys"
+version: "1.0.0"
+doi: "10.48550/arXiv.2507.10237"
+date-released: "2025-07-15"
+url: "https://arxiv.org/abs/2507.10237"
