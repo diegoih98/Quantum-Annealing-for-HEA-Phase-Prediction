@@ -36,5 +36,11 @@ Our solution formulates feature selection and classification as **Quadratic Unco
 
 ---
 
-## 🛠️ Repository Structure
+## 📄 License
+
+This project is licensed under the **MIT License** — see the [LICENSE](LICENSE) file for details.
+
+If you use this code in your work, please cite our paper:  
+**Quantum-Annealing Enhanced Machine Learning for Interpretable Phase Classification of High-Entropy Alloys**  
+[arXiv:2507.10237](https://arxiv.org/abs/2507.10237)
 
