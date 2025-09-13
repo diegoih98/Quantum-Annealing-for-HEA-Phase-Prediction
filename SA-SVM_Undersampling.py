@@ -194,9 +194,8 @@ y = data["Phase Category"]
 rus = RandomUnderSampler(random_state=1)
 X_sampled, y_sampled = rus.fit_resample(X_raw, y)
 
-
-
-selected_features = ['Tmelt', 'Omega', 'Phi2', 'Eta', 'VEC', 'PFP_A1', 'PFP_A2', 'PFP_B2', 'PFP_Sigma', 'Radius', 'Electronegativity', 'Ionic_E_1st', 'Ionic_E_2nd', 'Ionic_E_3rd', 'ThermalConductivity', 'ElectricalConductivity', 'Young', 'Shear', 'Poisson', 'Hardness', 'e/a']  # explicitly select your desired features
+# Explicitly select your desired features
+selected_features = ['Tmelt', 'Omega', 'Phi2', 'Eta', 'VEC', 'PFP_A1', 'PFP_A2', 'PFP_B2', 'PFP_Sigma', 'Radius', 'Electronegativity', 'Ionic_E_1st', 'Ionic_E_2nd', 'Ionic_E_3rd', 'ThermalConductivity', 'ElectricalConductivity', 'Young', 'Shear', 'Poisson', 'Hardness', 'e/a']  
 X_sampled = X_sampled[selected_features]
 
 
