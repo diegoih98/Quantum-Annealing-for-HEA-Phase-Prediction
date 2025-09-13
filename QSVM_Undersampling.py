@@ -1,0 +1,293 @@
+import pandas as pd
+import numpy as np
+import itertools
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import GridSearchCV, KFold
+from sklearn.svm import SVC
+from sklearn.model_selection import cross_val_score
+from sklearn.metrics import accuracy_score, f1_score
+from dwave.system import LeapHybridSampler, DWaveSampler, EmbeddingComposite
+import dwave.inspector
+from dimod import BinaryQuadraticModel
+from datetime import datetime
+from imblearn.under_sampling import RandomUnderSampler
+
+
+
+# Hyperparameter tuning using classical SVM (to find best gamma)
+def tune_hyperparameters(X, y,C):
+    param_grid = {'C': [C], 'gamma': [0.125,0.25,0.5,1,2,4,8], 'kernel': ['rbf']}
+    #param_grid = {'C': [C], 'kernel': ['linear']}
+    grid_search = GridSearchCV(SVC(), param_grid, cv=5)
+    grid_search.fit(X, y)
+    return grid_search.best_params_['gamma']
+
+# Gaussian Kernel Function
+def gaussian_kernel(x, y, gamma):
+    return np.exp(-gamma * np.linalg.norm(x - y)**2) #np.dot(x, y) 
+
+# Construct QUBO matrix
+def construct_QUBO(X, y, B, K, xi, gamma, kernel_threshold=1e-5):
+    N = len(X)
+    size = N * K
+    Q = np.zeros((size, size))
+    y = np.array(y).flatten()
+
+    for n in range(N):
+        for m in range(N):
+            kernel_value = gaussian_kernel(X[n], X[m], gamma)
+            # Explicitly reduce couplers by ignoring negligible kernel values
+            if kernel_value < kernel_threshold:
+                continue
+            
+            for k in range(K):
+                for j in range(K):
+                    idx_n = n*K + k
+                    idx_m = m*K + j
+                    Q[idx_n, idx_m] += 0.5 * (B**(k+j)) * y[n] * y[m] * (kernel_value + xi)
+
+    for n in range(N):
+        for k in range(K):
+            idx = n*K + k
+            Q[idx, idx] -= B**k
+
+    return Q
+
+# Solve QUBO using Quantum Annealer
+def solve_qubo(Q, use_hybrid_solver, num_reads=10000):
+    bqm = BinaryQuadraticModel(Q, "BINARY")
+    
+    if use_hybrid_solver:
+        print(f"\nUsing Leap Hybrid Solver... ")
+        sampler = LeapHybridSampler()
+        sampleset = sampler.sample(bqm, label="QSVM Hybrid Solver")
+        
+    else:
+        print(f"\nUsing D-Wave Quantum Annealer with Automatic Embedding...")
+        sampler = EmbeddingComposite(DWaveSampler())
+        sampleset = sampler.sample(bqm, annealing_time=20, num_reads=num_reads)
+        user_input = input("\nDo you want to inspect the best problem? (yes/no): ").strip().lower()
+        if user_input in ["yes", "y"]:
+            print("Launching D-Wave Inspector for the best problem...")
+            dwave.inspector.show(bqm, sampleset)
+            
+    return sampleset
+
+# Build Ensemble
+def build_ensemble(sampleset, X, B, K):
+    ensemble_alphas = []
+    for sample in sampleset.record.sample[:20]:
+        alphas = np.zeros(len(X))
+        for n in range(len(X)):
+            alpha_n = sum(B**k * sample[n*K + k] for k in range(K))
+            alphas[n] = alpha_n
+        ensemble_alphas.append(alphas)
+    final_alpha = np.mean(ensemble_alphas, axis=0)
+    return final_alpha
+
+def build_hybrid(sampleset, X, B, K):
+    # Retrieve the lowest-energy solution (first/best sample)
+    sample = sampleset.first.sample
+
+    alphas = np.zeros(len(X))
+    for n in range(len(X)):
+        alpha_n = sum(B**k * sample[n*K + k] for k in range(K))
+        alphas[n] = alpha_n
+
+    return alphas
+
+def calculate_bias(final_alpha, X, y, gamma, C):
+    y = np.array(y).flatten()
+    support_vectors = (final_alpha > 1e-5)  # Identify support vectors
+    numerator = sum(final_alpha[n] * (C - final_alpha[n]) * 
+                    (y[n] - sum(final_alpha[m] * y[m] * gaussian_kernel(X[m], X[n], gamma)
+                                for m in range(len(X))))
+                    for n in range(len(X)) if support_vectors[n])
+    
+    denominator = sum(final_alpha[n] * (C - final_alpha[n]) for n in range(len(X)) if support_vectors[n])
+
+    return numerator / denominator if denominator != 0 else 0  # Avoid division by zero
+
+# Decision function
+def decision_function(X_new, X, y, final_alpha, b, gamma):
+    y = np.array(y).flatten()
+    return np.sign(sum(final_alpha[n]*y[n]*gaussian_kernel(X[n], X_new, gamma)
+                   for n in range(len(X))) + b)
+
+def evaluate_model(X, y, final_alpha, b, gamma, num_folds=5):
+    kf = KFold(n_splits=num_folds, shuffle=True, random_state=42)
+    accuracies = []
+    f1_scores = []
+
+    # Ensure X is a NumPy array
+    X = X.to_numpy() if isinstance(X, pd.DataFrame) else X  
+    y = y.to_numpy() if isinstance(y, pd.Series) else y  
+
+    for train_idx, test_idx in kf.split(X):
+        X_train, X_test = X[train_idx], X[test_idx]
+        y_train, y_test = y[train_idx], y[test_idx]  # Direct indexing since y is now an array
+
+        y_pred = [decision_function(X_test[i], X_train, y_train, final_alpha, b, gamma) for i in range(len(X_test))]
+        accuracies.append(accuracy_score(y_test, y_pred))
+        f1_scores.append(f1_score(y_test, y_pred, average='macro'))
+
+    return np.mean(accuracies), np.mean(f1_scores)
+
+# Test model function
+def test_model(X_train, y_train, X_test, y_test, final_alpha, b, gamma):
+    # Ensure inputs are NumPy arrays
+    X_train = X_train.to_numpy() if isinstance(X_train, pd.DataFrame) else X_train
+    X_test = X_test.to_numpy() if isinstance(X_test, pd.DataFrame) else X_test
+    y_train = y_train.to_numpy() if isinstance(y_train, pd.Series) else y_train
+    y_test = y_test.to_numpy() if isinstance(y_test, pd.Series) else y_test
+
+    y_pred = [decision_function(X_test[i], X_train, y_train, final_alpha, b, gamma) for i in range(len(X_test))]
+    accuracy = accuracy_score(y_test, y_pred)
+    f1 = f1_score(y_test, y_pred, average='weighted')
+    
+    return accuracy, f1
+
+
+def train_and_evaluate_svm(X_train, y_train, X_test, y_test, C, gamma, cv_folds=5):
+    
+    print(f"Training SVM with C={C}, gamma={gamma}, using {cv_folds}-fold CV...")
+
+    # Initialize SVM with RBF kernel
+    svm_model = SVC(C=C, gamma=gamma, kernel='rbf')
+    #svm_model = SVC(C=C, kernel='linear')
+
+    # Perform cross-validation on training set
+    cv_accuracy = cross_val_score(svm_model, X_train, y_train, cv=cv_folds, scoring='accuracy').mean()
+    cv_f1 = cross_val_score(svm_model, X_train, y_train, cv=cv_folds, scoring='f1').mean()
+
+    # Train the model on the entire training set
+    svm_model.fit(X_train, y_train)
+
+    # Evaluate on the test set
+    y_pred_test = svm_model.predict(X_test)
+    test_accuracy = accuracy_score(y_test, y_pred_test)
+    test_f1 = f1_score(y_test, y_pred_test)
+
+
+    # Return results as a dictionary
+    return {
+        "C": C,
+        "gamma": gamma,
+        "CV Accuracy": cv_accuracy,
+        "CV F1-Score": cv_f1,
+        "Test Accuracy": test_accuracy,
+        "Test F1-Score": test_f1
+    }
+
+database = input("What database to work on? Database.xlsx: ")
+data = pd.read_excel(database)
+
+# Extract features and labels
+X_raw = data.drop(columns=["Composition", "Phase Category"])
+y = data["Phase Category"]
+
+
+
+rus = RandomUnderSampler(random_state=9)
+X_sampled, y_sampled = rus.fit_resample(X_raw, y)
+# Explicitly select your desired features
+selected_features = ['Tmelt', 'Omega', 'Phi2', 'Eta', 'VEC', 'PFP_A1', 'PFP_A2', 'PFP_B2', 'PFP_Sigma', 'Radius', 'Electronegativity', 'Ionic_E_1st', 'Ionic_E_2nd', 'Ionic_E_3rd', 'ThermalConductivity', 'ElectricalConductivity', 'Young', 'Shear', 'Poisson', 'Hardness', 'e/a']  
+X_sampled = X_sampled[selected_features]
+
+
+# Handle missing values
+X_sampled = X_sampled.fillna(X_raw.mean())
+scaler = StandardScaler()
+X_scaled_df = pd.DataFrame(scaler.fit_transform(X_sampled), columns=X_sampled.columns, index=X_sampled.index)
+
+X_scaled = scaler.fit_transform(X_sampled)
+
+# Load Test Dataset
+test_database = "Validation_HEAs.xlsx"
+sheet_name = input("Enter the sheet name (Laves, Heusler, RB2): ")
+test_data = pd.read_excel(test_database, sheet_name=sheet_name)
+
+
+X_test = test_data.drop(columns=["Composition", "Phase Category"], errors='ignore')
+X_test = X_test[selected_features]
+
+y_test = test_data["Phase Category"]
+X_test = X_test.fillna(X_test.mean())
+scaler = StandardScaler()
+X_test_scaled_df = pd.DataFrame(scaler.fit_transform(X_test), columns=X_test.columns, index=X_test.index)
+X_test_scaled = scaler.fit_transform(X_test)
+
+
+# Define parameter ranges
+B_values = [2, 3, 5]
+K_values = [2, 3]
+xi_values = [0, 1, 5]
+
+results = []
+
+use_hybrid_solver = input("Do you want to use the Leap Hybrid Solver? (yes/no): ").strip().lower()
+use_hybrid_solver = use_hybrid_solver == "yes"  # Convert to boolean for cleaner logic
+
+# Iterate over all combinations of (B, K, xi)
+for B, K, xi in itertools.product(B_values, K_values, xi_values):
+
+    print(f"Tuning hyperparameters for B={B}, K={K}, xi={xi}...")
+
+    # Compute C based on B and K
+    C = sum(B**k for k in range(K))
+
+    # Tune hyperparameters
+    gamma = tune_hyperparameters(X_scaled, y_sampled, C)
+
+    
+    SVC_results = train_and_evaluate_svm(X_scaled_df, y_sampled, X_test_scaled_df, y_test, C=C, gamma=gamma)
+    
+    print("Constructing QUBO...")
+    Q = construct_QUBO(X_scaled, y_sampled, B, K, xi, gamma)
+
+    print("Solving QUBO...")
+    sampleset= solve_qubo(Q,use_hybrid_solver)
+
+    print("Ensemble alpha...")
+    if use_hybrid_solver:
+        final_alpha = build_hybrid(sampleset, X_scaled, B, K) 
+    else:
+        final_alpha = build_ensemble(sampleset, X_scaled, B, K)
+
+    print("Calculating bias...")
+    b = calculate_bias(final_alpha, X_scaled, y_sampled, gamma, C)
+
+    print("Evaluating training set 5-CV...")
+    accuracy, f1 = evaluate_model(X_scaled_df, y_sampled, final_alpha, b, gamma)
+
+    print("Evaluating test set...")
+    accuracy_test, f1_test = test_model(X_scaled_df, y_sampled, X_test_scaled_df, y_test, final_alpha, b, gamma)
+
+    print(f"Completed: B={B}, K={K}, xi={xi} -> Accuracy: {accuracy:.2f}, F1 Score: {f1:.2f}")
+
+    # Store results
+    results.append({
+        'B': B,
+        'K': K,
+        'xi': xi,
+        'gamma' : gamma,
+        'final_alpha': final_alpha,
+        'b': b,
+        'C' : C,
+        'Features' : selected_features,
+        'Accuracy_training': accuracy,
+        'F1-Score_training': f1,
+        'Accuracy_test': accuracy_test,
+        'F1-Score_test': f1_test,
+        'SVC_Accuracy_training': SVC_results["CV Accuracy"],
+        'SVC_F1-Score_training': SVC_results["CV F1-Score"],
+        'SVC_Accuracy_test':SVC_results["Test Accuracy"],
+        'SVC_F1-Score_test': SVC_results["Test F1-Score"],
+    })
+
+results_df = pd.DataFrame(results)
+
+timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+filename = f"QA_grid_search_results_{database}_{timestamp}.csv"
+results_df.to_csv(filename, index=False)
+print(f"Results saved to {filename}")
