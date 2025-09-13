@@ -30,7 +30,7 @@ Crystallographic phase prediction is a key challenge in HEA design due to:
 
 Our solution formulates feature selection and classification as **Quadratic Unconstrained Binary Optimization (QUBO)** problems, solved using **D-Wave’s quantum annealer** (Advantage system, Pegasus topology) and hybrid solvers. We show:
 
-- **10,000× runtime speedups** over simulated annealing baselines.
+- **10,000× runtime speedups** over simulated annealing baselines (dimod).
 - **Improved or matched generalization** compared to classical models on experimentally validated HEAs.
 - **Physically interpretable feature sets** mapping directly to phase-stability descriptors (VEC, Ω, η, etc.).
 
